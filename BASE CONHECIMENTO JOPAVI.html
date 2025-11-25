@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Páginas com Passo-a-Passo + Busca com Sugestões</title>
+  <style>
+    :root{--bg:#f6f7fb;--card:#ffffff;--accent:#0b5ed7;--muted:#6c757d}
+    body{font-family:Inter,system-ui,Arial;background:var(--bg);margin:0;padding:24px;color:#111}
+    .container{max-width:1100px;margin:0 auto}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:18px}
+    h1{margin:0;font-size:20px}
+    button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:8px;cursor:pointer}
+    .controls{display:flex;gap:8px;align-items:center}
+    .searchWrap{position:relative}
+    input[type="search"]{padding:8px 10px;border-radius:8px;border:1px solid #ddd;min-width:260px}
+    .suggestions{position:absolute;background:#fff;border:1px solid #ddd;border-radius:8px;top:42px;left:0;right:0;z-index:20;max-height:180px;overflow:auto;box-shadow:0 6px 20px rgba(0,0,0,0.08)}
+    .suggestions button{display:block;width:100%;text-align:left;padding:8px;border:0;background:transparent;cursor:pointer}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:18px}
+    .card{background:var(--card);padding:12px;border-radius:10px;box-shadow:0 2px 8px rgba(15,15,15,0.05)}
+    .card h3{margin:0 0 8px 0;font-size:16px}
+    .steps{margin:0;padding-left:18px}
+    .tag{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef4ff;color:var(--accent);font-size:12px;margin-right:6px;margin-bottom:6px}
+    .small{font-size:13px;color:var(--muted)}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:40}
+    .modalCard{background:white;padding:16px;border-radius:10px;width:min(720px,95%);max-height:90vh;overflow:auto}
+    label{display:block;margin-top:8px;font-size:13px}
+    textarea,input[type="text"]{width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;box-sizing:border-box}
+    .row{display:flex;gap:8px}
+    .muted{color:var(--muted);font-size:13px}
+    .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+    .btn-ghost{background:transparent;color:var(--accent);border:1px solid #d7e3ff}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Páginas de Passo-a-Passo</h1>
+      <div class="controls">
+        <div class="searchWrap">
+          <input id="search" type="search" placeholder="Pesquisar palavra-chave..." autocomplete="off" />
+          <div id="suggestions" class="suggestions" style="display:none"></div>
+        </div>
+        <button id="btnAdd">Adicionar Página</button>
+        <button id="btnClear">Limpar Tudo</button>
+      </div>
+    </header>
+
+    <p class="small">Clique em <strong>Adicionar Página</strong> para criar uma nova página com título e passos. A busca sugere palavras-chave extraídas automaticamente dos títulos e passos das páginas criadas.</p>
+
+    <div id="grid" class="grid" aria-live="polite"></div>
+  </div>
+
+  <!-- Modal para adicionar/editar -->
+  <div id="modal" class="modal" style="display:none" role="dialog" aria-modal="true">
+    <div class="modalCard">
+      <h2 id="modalTitle">Nova Página</h2>
+      <label for="title">Título</label>
+      <input id="title" type="text" placeholder="Ex: Como trocar toner" />
+      <label for="steps">Passos (uma por linha)</label>
+      <textarea id="steps" rows="8" placeholder="1. Abra o compartimento...\n2. Remova..."></textarea>
+      <div class="muted">Dica: quanto mais descritivos os passos, melhores serão as sugestões de palavras-chave.</div>
+      <div class="actions">
+        <button id="btnCancel" class="btn-ghost">Cancelar</button>
+        <button id="btnSave">Salvar Página</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // gerenciamento básico em memória e localStorage
+    const GRID = document.getElementById('grid');
+    const modal = document.getElementById('modal');
+    const btnAdd = document.getElementById('btnAdd');
+    const btnSave = document.getElementById('btnSave');
+    const btnCancel = document.getElementById('btnCancel');
+    const btnClear = document.getElementById('btnClear');
+    const titleInput = document.getElementById('title');
+    const stepsInput = document.getElementById('steps');
+    const searchInput = document.getElementById('search');
+    const suggestionsEl = document.getElementById('suggestions');
+    let pages = []; // {id,title,steps:[],keywords:[]}
+
+    // helpers
+    const saveToStorage = ()=> localStorage.setItem('stepPages_v1', JSON.stringify(pages));
+    const loadFromStorage = ()=> JSON.parse(localStorage.getItem('stepPages_v1') || '[]');
+
+    const extractKeywords = text=>{
+      // remove pontuação, números e stopwords simples; extrai palavras maiores que 2 chars
+      if(!text) return [];
+      text = text.toLowerCase();
+      text = text.replace(/[\d\.,\/#!$%\^&\*;:{}=\-_`~()@\+\?><\[\]\+"]/g,' ');
+      const stop = new Set(['a','o','e','as','os','de','da','do','dos','das','com','para','por','um','uma','no','na','que','como','se','ao','à','os','em']);
+      const parts = text.split(/\s+/).map(s=>s.trim()).filter(Boolean);
+      const freq = {};
+      for(const p of parts){
+        if(p.length<=2) continue;
+        if(stop.has(p)) continue;
+        freq[p] = (freq[p]||0)+1;
+      }
+      // ordena por freq
+      const arr = Object.keys(freq).sort((a,b)=>freq[b]-freq[a]);
+      return arr.slice(0,30);
+    };
+
+    const rebuildAllKeywords = ()=>{
+      const all = new Set();
+      pages.forEach(p=>{
+        p.keywords.forEach(k=>all.add(k));
+      });
+      return Array.from(all).sort();
+    };
+
+    const render = (filterKeyword=null)=>{
+      GRID.innerHTML = '';
+      const list = filterKeyword ? pages.filter(p=> p.keywords.includes(filterKeyword) || p.title.toLowerCase().includes(filterKeyword)) : pages;
+      if(list.length===0){
+        GRID.innerHTML = '<div class="card"><div class="small">Nenhuma página adicionada ainda. Clique em "Adicionar Página".</div></div>';
+        return;
+      }
+      for(const p of list){
+        const card = document.createElement('div');
+        card.className = 'card';
+        const h = document.createElement('h3');
+        h.textContent = p.title;
+        card.appendChild(h);
+
+        const meta = document.createElement('div');
+        meta.className = 'small';
+        meta.innerHTML = 'Palavras-chave: ' + (p.keywords.length? p.keywords.slice(0,6).map(k=>`<span class="tag">${k}</span>`).join(' ') : '<span class="muted">nenhuma</span>');
+        card.appendChild(meta);
+
+        const ol = document.createElement('ol');
+        ol.className = 'steps';
+        for(const s of p.steps){
+          const li = document.createElement('li');
+          li.textContent = s;
+          ol.appendChild(li);
+        }
+        card.appendChild(ol);
+
+        const btnRow = document.createElement('div');
+        btnRow.style.marginTop='10px';
+        const edit = document.createElement('button');
+        edit.textContent='Editar';
+        edit.style.marginRight='8px';
+        edit.onclick = ()=> openEdit(p.id);
+        const del = document.createElement('button');
+        del.textContent='Remover';
+        del.className='btn-ghost';
+        del.onclick = ()=> { if(confirm('Remover página?')) { pages = pages.filter(x=>x.id!==p.id); saveToStorage(); render(); } };
+        btnRow.appendChild(edit);
+        btnRow.appendChild(del);
+        card.appendChild(btnRow);
+
+        GRID.appendChild(card);
+      }
+    };
+
+    // modal handlers
+    let editingId = null;
+    btnAdd.onclick = ()=> openModal();
+    btnCancel.onclick = ()=> closeModal();
+    btnSave.onclick = ()=> {
+      const title = titleInput.value.trim();
+      const stepsText = stepsInput.value.trim();
+      if(!title){ alert('Título obrigatório'); return; }
+      const steps = stepsText? stepsText.split(/\r?\n/).map(s=>s.trim()).filter(Boolean) : [];
+      const keywords = extractKeywords(title + ' ' + steps.join(' '));
+      if(editingId){
+        const idx = pages.findIndex(p=>p.id===editingId);
+        pages[idx] = {id:editingId,title,steps,keywords};
+      } else {
+        const id = 'p_' + Date.now();
+        pages.push({id,title,steps,keywords});
+      }
+      saveToStorage();
+      closeModal();
+      render();
+    };
+
+    function openModal(initial={title:'',steps:''}){
+      editingId = null;
+      titleInput.value = initial.title || '';
+      stepsInput.value = initial.steps || '';
+      document.getElementById('modalTitle').textContent = initial.title? 'Editar Página' : 'Nova Página';
+      modal.style.display='flex';
+      titleInput.focus();
+    }
+    function closeModal(){ modal.style.display='none'; editingId=null; }
+    function openEdit(id){
+      const p = pages.find(x=>x.id===id);
+      if(!p) return;
+      editingId = id;
+      titleInput.value = p.title;
+      stepsInput.value = p.steps.join('\n');
+      document.getElementById('modalTitle').textContent = 'Editar Página';
+      modal.style.display='flex';
+    }
+
+    // search & suggestions
+    function showSuggestions(q){
+      const all = rebuildAllKeywords();
+      if(!q) {
+        suggestionsEl.style.display='none';
+        return;
+      }
+      const ql = q.toLowerCase();
+      const matches = all.filter(k=>k.includes(ql)).slice(0,12);
+      if(matches.length===0){ suggestionsEl.style.display='none'; return; }
+      suggestionsEl.innerHTML = '';
+      matches.forEach(m=>{
+        const b = document.createElement('button');
+        b.textContent = m;
+        b.onclick = ()=> {
+          searchInput.value = m;
+          suggestionsEl.style.display='none';
+          doSearch(m);
+        };
+        suggestionsEl.appendChild(b);
+      });
+      suggestionsEl.style.display='block';
+    }
+
+    function doSearch(term){
+      const t = term.trim().toLowerCase();
+      render(t);
+    }
+
+    searchInput.addEventListener('input', (e)=> {
+      showSuggestions(e.target.value);
+    });
+    searchInput.addEventListener('keydown', (e)=>{
+      if(e.key==='Enter'){ e.preventDefault(); doSearch(e.target.value); suggestionsEl.style.display='none'; }
+      if(e.key==='Escape'){ suggestionsEl.style.display='none'; }
+    });
+
+    btnClear.onclick = ()=> {
+      if(confirm('Limpar todas as páginas? Isso apagará os dados salvos localmente.')) {
+        pages = []; saveToStorage(); render();
+      }
+    };
+
+    // inicialização
+    (function init(){
+      pages = loadFromStorage();
+      render();
+      // clique fora para fechar sugestões
+      document.addEventListener('click', (e)=>{
+        if(!document.querySelector('.searchWrap').contains(e.target)) suggestionsEl.style.display='none';
+      });
+      // suporte a salvar com ctrl+s no modal
+      document.addEventListener('keydown', (e)=> {
+        if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='s' && modal.style.display==='flex'){ e.preventDefault(); btnSave.click(); }
+      });
+    })();
+  </script>
+</body>
+</html>
